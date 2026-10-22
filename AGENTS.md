@@ -41,7 +41,7 @@ The repository uses GitHub Actions (`.github/workflows/ci.yaml`) with a two-stag
    - Executes SonarCloud static analysis and Quality Gate check (`./mvnw sonar:sonar -Dsonar.qualitygate.wait=true`) when `SONAR_TOKEN` is configured.
    - Runs automatically on all pushes and pull requests targeting `main` and `master`.
 2. **Native Integration Tests (`native`)**:
-   - Compiles and runs native image tests using Mandrel 21 (`./mvnw verify -pl integration-tests -Dnative`).
+   - Compiles and runs native image tests using Mandrel 21 (`./mvnw verify -pl integration-tests -am -Dnative`).
    - **Trunk (`main`/`master`)**: Runs automatically upon completion of the JVM build.
    - **Pull Requests**: Gated behind a mandatory manual review stage via the GitHub Environment `native-integration-tests`.
    - **Auto-Invalidation**: Concurrency is configured on the PR branch with `cancel-in-progress: true`, automatically canceling and invalidating previous approvals whenever a new commit is pushed to the PR branch.
@@ -73,7 +73,7 @@ Always run these commands before submitting changes or finishing a task:
   ```
 - **GraalVM Native Build Validation:**
    ```bash
-   ./mvnw verify -pl integration-tests -Dnative
+   ./mvnw verify -pl integration-tests -am -Dnative
    ```
 
 ---

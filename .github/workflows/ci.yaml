@@ -76,4 +76,4 @@ jobs:
           cache: 'maven'
 
       - name: Run Native Integration Tests
-        run: ./mvnw -B verify -pl integration-tests -Dnative
+        run: ./mvnw -B verify -pl integration-tests -am -Dnative

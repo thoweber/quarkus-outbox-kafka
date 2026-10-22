@@ -25,6 +25,12 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>io.github.thoweber</groupId>
+            <artifactId>quarkus-outbox-kafka-deployment</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-junit5</artifactId>
             <scope>test</scope>
