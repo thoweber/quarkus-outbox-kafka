@@ -146,3 +146,20 @@ Refer to [`integration-tests/TEST_GUIDE.md`](file:///home/developer/projects/qua
 2. `ShortTransactionSandwichIT` (Zero active DB connections during Kafka transit)
 3. `AggregateQuarantineIT` (Poison pill dead-lettering, trailing aggregate freeze, sibling aggregate drainage, admin replay/skip)
 4. `OutboxConcurrencyIT` (Multi-pod contention and per-aggregate monotonic FIFO arrival)
+
+---
+
+## Agent Harness, Skills & Configuration
+
+The agent harness is orchestrated via [`.agents/config.json`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/config.json), which encodes project metadata, module layouts, and all 14 measurable Quality Goals (QG-1 through QG-14).
+
+### Specialized Extension Skills
+* [`extension-architect`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/extension-architect/SKILL.md): Enforces Quarkus extension architecture invariants, module boundaries, build-time augmentations, low-allocation design, and the Short-Transaction Sandwich.
+* [`sla-benchmark-runner`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/sla-benchmark-runner/SKILL.md): Governs performance benchmarking, JMH allocation microbenchmarks, and Dev Services load testing against numerical SLAs.
+* [`tdd-runner`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/tdd-runner/SKILL.md): Governs the autonomous Red-Green-Refactor loop, distinguishing fast build-time unit tests (`QuarkusUnitTest`, $< 3\text{s}$, zero Docker) from containerized integration tests.
+* [`test-manager`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/test-manager/SKILL.md): Governs the 3-tier Quarkus extension testing taxonomy, mandatory invariant suites (`PhantomProducerIT`, `ShortTransactionSandwichIT`, etc.), and GraalVM native image verification.
+* [`sonar-remediation`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/sonar-remediation/SKILL.md): Static analysis, resource leak prevention (`StatelessSession`, Agroal pools), exception hygiene, and Quarkiverse formatting.
+
+### Architectural Templates
+* [ADR Template](file:///home/developer/projects/quarkus-outbox-kafka/.agents/templates/adr-template.md): Standardized format for Architectural Decision Records with explicit Positive/Negative consequences and Non-Negotiable Invariants.
+* [Mermaid Templates](file:///home/developer/projects/quarkus-outbox-kafka/.agents/templates/mermaid-templates.md): Ready-to-use Mermaid diagrams for the Short-Transaction Sandwich, multi-pod virtual bucketing topology, and aggregate quarantining state machines.

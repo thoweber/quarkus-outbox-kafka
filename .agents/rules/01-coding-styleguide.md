@@ -338,3 +338,16 @@ Run native tests prior to preparing releases:
 ./mvnw verify -pl integration-tests -Dnative
 ```
 Ensure all entity classes, records, and serializers are indexed in `OutboxProcessor` without generating reflection errors during native image construction.
+
+---
+
+## 8. Agent Harness, Skills & ADR Governance
+
+Engineering activities in this repository are guided by the specialized skills and templates in `.agents/`:
+* **Project Configuration & Quality Goals:** Centralized in [`.agents/config.json`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/config.json) (14 measurable SLAs).
+* **Extension Architecture:** Governed by [`extension-architect`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/extension-architect/SKILL.md).
+* **SLA Benchmarks:** Governed by [`sla-benchmark-runner`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/sla-benchmark-runner/SKILL.md).
+* **TDD & Fast Feedback:** Governed by [`tdd-runner`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/tdd-runner/SKILL.md).
+* **Test Taxonomy & Invariants:** Governed by [`test-manager`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/test-manager/SKILL.md).
+* **Resource Leak Prevention & Code Hygiene:** Governed by [`sonar-remediation`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/skills/sonar-remediation/SKILL.md).
+* **Architectural Decisions:** All future ADRs must be authored using [`.agents/templates/adr-template.md`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/templates/adr-template.md). Diagrams must follow [`.agents/templates/mermaid-templates.md`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/templates/mermaid-templates.md).

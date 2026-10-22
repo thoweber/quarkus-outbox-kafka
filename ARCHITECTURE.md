@@ -575,66 +575,216 @@ Dispatched Kafka messages are formatted according to the **CNCF CloudEvents v1.0
 
 ### ADR-001: Native KafkaProducer vs. SmallRye Reactive Messaging
 
-* **Status:** Accepted.
-* **Context:** SmallRye Reactive Messaging uses static channel-to-topic bindings. An outbox requires dynamic destination routing, low-allocation batch iterations, and manual acknowledgment tracking to coordinate the "Short-Transaction Sandwich".
-* **Decision:** Depend directly on `io.quarkus:quarkus-kafka-client` and use `org.apache.kafka.clients.producer.KafkaProducer`.
-* **Consequences:** Provides native batch pipelining into Kafka's `RecordAccumulator`, enables dynamic destination topics per outbox row, and eliminates channel boilerplate in user configuration.
+* **Status:** Accepted
+
+#### Context
+SmallRye Reactive Messaging uses static channel-to-topic bindings defined at build time. An outbox extension requires dynamic runtime destination routing, low-allocation batch iterations, and manual acknowledgment tracking to coordinate the "Short-Transaction Sandwich". Furthermore, reactive channels introduce intermediate buffer queues and multi-layered reactive streams allocations that conflict with our $\le 512\text{ bytes}$ per record allocation budget.
+
+#### Decision
+Depend directly on `io.quarkus:quarkus-kafka-client` and use the low-level `org.apache.kafka.clients.producer.KafkaProducer` API wrapped in an application-scoped dispatcher bean.
+
+#### Consequences
+
+##### Positive
+- Native batch pipelining directly into Kafka's internal `RecordAccumulator`.
+- Dynamic destination topics per outbox row without needing statically configured channels.
+- Full control over synchronous or asynchronous acknowledgment collection across batch boundaries.
+- Eliminates channel boilerplate, reactive stream wrapping overhead, and unneeded dependencies.
+
+##### Negative
+- Requires custom manual error tracking, retry backoff calculation, and callback error propagation instead of framework-provided channel fault-tolerance annotations.
+- Manual lifecycle management (producer initialization, resource cleanup on shutdown).
+
+#### Non-Negotiable Invariants
+- Runtime dispatch code must NEVER use SmallRye Reactive Messaging channels or `@Incoming`/`@Outgoing` annotations.
+- The `KafkaProducer` instance must be reused as an application-scoped singleton, thread-safe across virtual threads.
+- Message acknowledgments must be tracked in-memory to execute Phase 3 batch deletes.
 
 ### ADR-002: High-Cardinality Virtual Pre-Sharding ($M = 1024$ Default)
 
-* **Status:** Accepted.
-* **Context:** Tying database partitions directly to physical Kafka partition counts creates data hazards: resizing Kafka partitions causes events for the same aggregate to hash to different buckets, breaking FIFO ordering.
-* **Decision:** Decouple physical messaging topology from persistence sharding by mapping aggregate keys across high-cardinality virtual buckets (default $M = 1024$).
-* **Consequences:** Decouples persistent database schema from Kafka topology and pod counts. Reduces hot-key blast radius to $< 0.1\%$. Accommodates scaling Kafka partitions or application pods without database re-sharding migrations.
+* **Status:** Accepted
+
+#### Context
+Tying database partitions or bucket IDs directly to physical Kafka partition counts creates data hazards: resizing Kafka partitions causes events for the same aggregate to hash to different buckets, breaking FIFO ordering. Furthermore, low bucket counts (e.g., 8 or 16) create hot-key contention where a single busy aggregate blocks or delays processing for unrelated entities.
+
+#### Decision
+Decouple physical messaging topology from persistence sharding by mapping aggregate keys across high-cardinality virtual buckets (default $M = 1024$). The bucket ID is calculated using `(MurmurHash3.hash32(aggregateId) & Integer.MAX_VALUE) % M`.
+
+#### Consequences
+
+##### Positive
+- Completely decouples the persistent database schema from Kafka broker topology, partition counts, and application pod scaling.
+- Reduces hot-key blast radius to $< 0.1\%$ per aggregate.
+- Allows independent horizontal scaling of worker pods without re-partitioning the database or migrating data.
+
+##### Negative
+- Requires maintaining $M$ lock rows in the database (`outbox_lock`).
+- Requires worker pods to lease multiple buckets (e.g., in ranges or chunks) and execute polling loops across assigned bucket partitions.
+
+#### Non-Negotiable Invariants
+- The hashing function MUST be positive (masking sign bit: `hash & Integer.MAX_VALUE`).
+- Virtual bucket count $M$ must default to 1024.
+- Events for the same `aggregateId` within the same generation MUST deterministically map to the exact same `bucket_id`.
 
 ### ADR-003: Pre-Seeded Lock Rows over Dynamic SQL Upserts
 
-* **Status:** Accepted.
-* **Context:** Standard Jakarta Persistence (JPA / JPQL) lacks a portable cross-database `UPSERT` / `MERGE` construct. Proprietary syntax (`ON CONFLICT DO UPDATE`, `ON DUPLICATE KEY UPDATE`) breaks database portability.
-* **Decision:** Pre-seed the `outbox_lock` table with rows $0 \dots M-1$ during schema migration.
-* **Consequences:** Lock acquisition and release are expressed as portable JPQL bulk `UPDATE` statements using Compare-And-Swap (CAS) logic. Guarantees 100% portability across all SQL dialects supported by Hibernate.
+* **Status:** Accepted
+
+#### Context
+Standard Jakarta Persistence (JPA / JPQL) lacks a portable cross-database `UPSERT` / `MERGE` construct. Proprietary syntax (`ON CONFLICT DO UPDATE`, `ON DUPLICATE KEY UPDATE`, `MERGE INTO`) breaks database portability across PostgreSQL, MySQL, MariaDB, Oracle, and MS SQL Server. Dynamic insertion during lock acquisition also risks insertion race conditions and transaction deadlocks.
+
+#### Decision
+Pre-seed the `outbox_lock` table with rows $0 \dots M-1$ during schema initialization or migration. Lock acquisition and renewal operate strictly via portable atomic JPQL Compare-And-Swap (CAS) `UPDATE` queries against pre-existing rows.
+
+#### Consequences
+
+##### Positive
+- Lock acquisition and release are expressed as portable ANSI JPQL bulk `UPDATE` statements using Compare-And-Swap logic (`UPDATE OutboxLock l SET l.lockedBy = :podId, l.leaseUntil = :newLease WHERE l.bucketId = :bucketId AND (l.leaseUntil < :now OR l.lockedBy = :podId)`).
+- Guarantees 100% portability across all SQL dialects supported by Hibernate ORM without native SQL dialects.
+- Eliminates row-level insertion lock contention and duplicate key conflicts.
+
+##### Negative
+- Requires an initialization step (Flyway/Liquibase migration or extension auto-seeder) to insert $M$ rows before worker polling begins.
+- Schema change required if virtual bucket count $M$ is reconfigured.
+
+#### Non-Negotiable Invariants
+- Dynamic `INSERT` or native vendor-specific `UPSERT` queries are strictly forbidden in lock acquisition routines.
+- Lock acquisition and renewal MUST execute as atomic JPQL CAS updates against existing `bucket_id` rows.
 
 ### ADR-004: Hibernate StatelessSession for Outbox Processing
 
-* **Status:** Accepted.
-* **Context:** Polling, hydrating, and deleting thousands of events using a standard JPA `EntityManager` introduces dirty-checking overhead, persistence context hydration lag, and garbage collector pressure.
-* **Decision:** Execute batch polling and deletion exclusively via Hibernate's `StatelessSession`.
-* **Consequences:** Bypasses first-level caches and dirty-checking routines entirely, executing direct JDBC-level queries with type-safe JPA mappings and minimal allocation overhead.
+* **Status:** Accepted
+
+#### Context
+Polling, hydrating, and deleting thousands of events using a standard JPA `EntityManager` introduces dirty-checking overhead, persistence context hydration lag, first-level cache accumulation, and severe garbage collection pressure. This violates our SLA of $\le 512\text{ bytes}$ heap allocation per record and causes memory bloat.
+
+#### Decision
+Execute batch polling, dead-letter writes, and batch deletion exclusively via Hibernate's `StatelessSession` using direct Java 21 constructor record projections (`OutboxBatchRecord`).
+
+#### Consequences
+
+##### Positive
+- Completely bypasses first-level cache, entity management snapshots, and automatic dirty-checking routines.
+- Executes direct JDBC-level queries with type-safe JPA mappings.
+- Enables direct constructor projection into lightweight immutable Java 21 records (`OutboxBatchRecord`), achieving zero entity hydration overhead and meeting our $\le 512\text{ bytes}$ allocation budget.
+
+##### Negative
+- No automatic dirty checking or cascade persistence; all database operations (inserts, updates, deletes) must be explicitly invoked on the `StatelessSession`.
+- Requires careful lifecycle management of `StatelessSession` instances within programmatic transaction boundaries.
+
+#### Non-Negotiable Invariants
+- Full JPA managed entities (`OutboxEvent`) must NEVER be hydrated in polling or dispatch worker loops.
+- All outbox reads in the worker loop must use direct record projections (`OutboxBatchRecord`) via `StatelessSession`.
+- `StatelessSession` instances must be opened and closed strictly within their respective short transaction boundaries (Phase 1 and Phase 3).
 
 ### ADR-005: Dedicated Connection Pool Bulkhead for Locks and Heartbeats
 
-* **Status:** Accepted.
-* **Context:** Heavy domain transactions or slow queries can exhaust the primary Agroal connection pool. If a worker pod cannot acquire a connection to renew its bucket lease, the lease expires prematurely, causing split-brain takeovers.
-* **Decision:** Isolate lock acquisition and heartbeats into a dedicated Agroal named data source (`outbox-lock`).
-* **Consequences:** Guarantees that heartbeat renewals succeed within millisecond deadlines, regardless of load on the primary application connection pool.
+* **Status:** Accepted
+
+#### Context
+Heavy domain business transactions, long-running batch queries, or transient database slowdowns can easily exhaust the primary Agroal connection pool. If an outbox worker pod cannot acquire a database connection to renew its bucket lease before $T_{\text{lease}}$ expires, its lease is stolen by a peer pod, resulting in split-brain execution and transient duplicate dispatches.
+
+#### Decision
+Physically isolate lock acquisition and heartbeat renewals into a dedicated Agroal named data source pool (`quarkus.datasource."outbox-lock"`).
+
+#### Consequences
+
+##### Positive
+- Guarantees that heartbeat renewals succeed within millisecond deadlines, completely isolated from application transaction volume and connection pool starvation.
+- Provides predictable lease timing and prevents premature lease loss caused by domain traffic spikes.
+
+##### Negative
+- Requires a small additional connection allocation (typically 2-5 connections per pod) reserved exclusively for lock maintenance.
+- Requires configuring and managing two Agroal DataSource instances in the Quarkus runtime.
+
+#### Non-Negotiable Invariants
+- Lock acquisition and heartbeat supervisor threads must NEVER borrow connections from the default/application Agroal connection pool.
+- All lease renewals must execute against the dedicated `outbox-lock` data source pool.
 
 ### ADR-006: Aggregate-Level Quarantining over Bucket-Level Halting
 
-* **Status:** Accepted.
-* **Context:** When a poisoned record fails repeatedly, halting the entire virtual bucket blocks hundreds of unrelated, healthy aggregates. Conversely, dropping the event while sending trailing events for that aggregate breaks domain state machines.
-* **Decision:** On exceeding `maxRetries`, move the poisoned record to `outbox_dead_letter` and freeze trailing events for that specific `aggregateId` (`next_retry_at = '9999-12-31'`). Unrelated aggregates in the bucket continue processing.
-* **Consequences:** Maintains strict aggregate sequence consistency while keeping virtual bucket throughput unblocked for all other tenants and entities.
+* **Status:** Accepted
+
+#### Context
+When an unprocessable record (poison pill, schema incompatibility, topic authorization failure) fails repeatedly, halting the entire virtual bucket blocks hundreds of unrelated, healthy aggregates sharing that bucket. Conversely, dropping the event or skipping it while continuing to dispatch subsequent events for that same aggregate corrupts domain state machines by violating FIFO ordering.
+
+#### Decision
+Implement **Aggregate-Level Quarantining**. When an event reaches `maxRetries`, it is copied to `OutboxDeadLetter`, removed from `OutboxEvent`, and all trailing events for that specific `aggregateId` are frozen in place by setting `next_retry_at = '9999-12-31'`. The worker loop continues dispatching all other healthy aggregates in the virtual bucket.
+
+#### Consequences
+
+##### Positive
+- Unrelated aggregates in the same virtual bucket continue flowing with zero interruption (high bucket availability).
+- Strict FIFO ordering is preserved for the affected aggregate: no trailing events can be dispatched before the dead-letter issue is resolved.
+- Administrative endpoints (`/q/outbox-kafka/admin/quarantined`) allow operators to inspect, replay, or skip frozen aggregates.
+
+##### Negative
+- Requires additional administrative REST APIs and operational tooling to inspect and unfreeze quarantined aggregates.
+- Trailing events for the quarantined aggregate accumulate in the outbox table until operator intervention.
+
+#### Non-Negotiable Invariants
+- Never drop a poison pill event while allowing subsequent events for the same aggregate to be dispatched.
+- Poisoned events exceeding `maxRetries` MUST be written to `OutboxDeadLetter` and trailing events for that aggregate MUST be frozen (`next_retry_at = '9999-12-31'`).
+- The worker polling filter must exclude frozen records (`WHERE next_retry_at <= :now`).
 
 ### ADR-007: Persistent UUIDv7 Identifiers & Consumer-Side Idempotency Contract
 
-* **Status:** Accepted.
-* **Context:** In distributed systems lacking XA 2PC between RDBMS and Kafka, Stop-The-World (STW) GC pauses or network stalls create Time-of-Check to Time-of-Use (TOCTOU) races: a pod pauses between its local lock check and network socket flush, its lease is stolen by a peer, and upon resumption it flushes stale duplicate records to Kafka. In-memory flag checks cannot prevent socket flushes once bytes reach OS buffers.
-* **Decision:**
-  1. Mandate **at-least-once delivery with consumer-side idempotency**.
-  2. Primary keys for `OutboxEvent` and `OutboxDeadLetter` are persisted **UUIDv7** identifiers (RFC 9562), which map 1:1 to CloudEvents header `ce_id`. Dynamic generation in memory (e.g. `UUID.randomUUID()`) is strictly prohibited.
-  3. Worker loops enforce a cooperative fail-fast deadline check: if remaining lease duration $T_{\text{remaining}} < 2000\text{ms}$, dispatch halts immediately to yield the lock safely.
-* **Consequences:** UUIDv7 preserves database B-tree index performance and chronological ordering while providing globally unique, immutable message IDs. Downstream consumers reliably deduplicate retried or stale messages using `ce_id`.
+* **Status:** Accepted
+
+#### Context
+In distributed systems lacking XA two-phase commit between RDBMS and Kafka, Stop-The-World (STW) GC pauses or network stalls create Time-of-Check to Time-of-Use (TOCTOU) races: a pod pauses between its local lock check and network socket flush, its lease is stolen by a peer, and upon resumption it flushes stale duplicate records to Kafka. In-memory flag checks cannot prevent socket flushes once bytes reach OS buffers.
+
+#### Decision
+1. Mandate **at-least-once delivery with consumer-side idempotency**.
+2. Generate entity primary key `id` as a time-ordered **UUIDv7** (RFC 9562) upon event creation and map it 1:1 to CloudEvents header `ce_id`. Dynamic random UUID generation in dispatch loops is strictly prohibited.
+3. Enforce a cooperative worker buffer: workers must check `if (leaseTimeRemaining < Duration.ofSeconds(2))` before each record dispatch, aborting active batches before lease expiration.
+
+#### Consequences
+
+##### Positive
+- UUIDv7 preserves database B-tree index locality and chronological insertion performance while providing globally unique, immutable identifiers.
+- Downstream consumers reliably deduplicate retried or stale messages using `ce_id`.
+- The 2-second cooperative worker buffer drastically reduces duplicate dispatch occurrences during near-expiry lease conditions.
+
+##### Negative
+- Downstream consumers must implement deduplication (e.g., maintaining an idempotent message store keyed by `ce_id`).
+- Requires UUIDv7 generation logic in the event factory/entity lifecycle.
+
+#### Non-Negotiable Invariants
+- `OutboxEvent.id` must be generated as UUIDv7 upon creation and persisted in the database.
+- Dynamic random UUID generation (`UUID.randomUUID()`) inside dispatch loops or header mappers is strictly forbidden.
+- The CloudEvents `ce_id` header MUST match the persisted `OutboxEvent.id`.
+- Workers must enforce the cooperative $\ge 2\text{s}$ lease buffer prior to initiating network sends.
 
 ### ADR-008: Online Generation/Epoch Gating for Zero-Downtime Dynamic Resharding
 
-* **Status:** Accepted.
-* **Context:** Dynamic bucket resizing causes events for the same aggregate to hash to different buckets, which peer pods can lease concurrently, causing out-of-order dispatches ("The Hash Reshuffling Catastrophe"). Halting writes or forcing offline maintenance windows impairs high-availability production workloads.
-* **Decision:** Adopt **Online Generation/Epoch Gating**.
-  - All outbox records persist a `generation` column with composite index `(generation ASC, bucket_id ASC, next_retry_at ASC, id ASC)`.
-  - When reconfiguring virtual shards, operators increment `quarkus.outbox.generation` and update `quarkus.outbox.virtual-shards`.
-  - Application transactions immediately write subsequent events using the new generation and new bucket count without downtime or transaction pausing.
-  - Workers enforce a poller barrier: `SELECT MIN(generation) FROM OutboxEvent`. Workers exclusively process older generation events until drained to 0, whereupon processing naturally advances to the new generation.
-* **Consequences:** Delivers continuous zero-downtime scaling with strict per-aggregate FIFO guarantees, zero data loss, and zero cross-generation hash collisions.
+* **Status:** Accepted
+
+#### Context
+Dynamic bucket resizing causes events for the same aggregate to hash to different buckets, which peer pods can lease concurrently, causing out-of-order dispatches ("The Hash Reshuffling Catastrophe"). Halting writes or forcing offline maintenance windows impairs high-availability production workloads.
+
+#### Decision
+Adopt **Online Generation/Epoch Gating**:
+- All outbox records persist a `generation` column with composite index `(generation ASC, bucket_id ASC, next_retry_at ASC, id ASC)`.
+- When reconfiguring virtual shards, operators increment `quarkus.outbox.generation` and update `quarkus.outbox.virtual-shards`.
+- Application transactions immediately write subsequent events using the new generation and new bucket count without downtime or transaction pausing.
+- Workers enforce a poller barrier: `SELECT MIN(generation) FROM OutboxEvent`. Workers exclusively process older generation events until drained to 0, whereupon processing naturally advances to the new generation.
+
+#### Consequences
+
+##### Positive
+- Delivers continuous zero-downtime scaling with strict per-aggregate FIFO guarantees and zero cross-generation hash collisions.
+- No database maintenance window, application stop, or read/write pausing required during resharding.
+- Simple, deterministic progression governed by database state.
+
+##### Negative
+- Requires a composite database index including `generation`.
+- Requires an extra lightweight query (`SELECT MIN(generation)`) at the start of polling cycles when multiple generations might exist.
+
+#### Non-Negotiable Invariants
+- Application writes must always attach the currently active `generation` configuration to new `OutboxEvent` records.
+- Workers must NEVER poll or dispatch events from generation $G + 1$ while any unprocessed events remain in generation $G$.
+- Resharding must always increment the generation monotonically.
 
 ---
 

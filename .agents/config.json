@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json.schemastore.org/quarkus-extension-agent-config.json",
+  "project": {
+    "name": "quarkus-outbox-kafka",
+    "version": "0.1.0-SNAPSHOT",
+    "javaVersion": "21",
+    "quarkusVersion": "3.15.1",
+    "groupId": "io.github.thoweber",
+    "parentArtifactId": "quarkus-outbox-kafka-parent",
+    "architectureStyle": "Transactional Outbox Quarkus Extension"
+  },
+  "modules": {
+    "runtime": "runtime",
+    "deployment": "deployment",
+    "integrationTests": "integration-tests"
+  },
+  "qualityGoalsAndSLA": {
+    "drainThroughputMsgsPerSecMin": 10000,
+    "transitLatencyMsP50Max": 15,
+    "transitLatencyMsP95Max": 50,
+    "transitLatencyMsP99Max": 100,
+    "databaseHoldTimeMsPhase2": 0,
+    "backlogScanMsP99Max": 2.0,
+    "heapAllocationBytesPerRecordMax": 512,
+    "managedEntityHydrationsInLoop": 0,
+    "gcPauseZgcMsP999Max": 10,
+    "gcPauseG1MaxStwMs": 50,
+    "jvmHeapOverheadMbMax": 32,
+    "nativeContainerRssIdleMbMax": 64,
+    "nativeContainerRssPeakMbMax": 96,
+    "virtualThreadStackKbMax": 1,
+    "inFlightMemoryMbMax": 5,
+    "fifoOrderAnomaliesMax": 0,
+    "duplicateIdentificationPercent": 100,
+    "heartbeatSuccessRatePercent": 100
+  },
+  "skills": {
+    "extensionArchitect": ".agents/skills/extension-architect/SKILL.md",
+    "slaBenchmarkRunner": ".agents/skills/sla-benchmark-runner/SKILL.md",
+    "tddRunner": ".agents/skills/tdd-runner/SKILL.md",
+    "testManager": ".agents/skills/test-manager/SKILL.md",
+    "sonarRemediation": ".agents/skills/sonar-remediation/SKILL.md"
+  },
+  "templates": {
+    "adrTemplate": ".agents/templates/adr-template.md",
+    "mermaidTemplates": ".agents/templates/mermaid-templates.md"
+  }
+}
