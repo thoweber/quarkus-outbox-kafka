@@ -1,17 +1,45 @@
+# Maven Target Output Directories
 target/
-pom.xml.tag
-pom.xml.releaseBackup
-pom.xml.versionsBackup
-pom.xml.next
-release.properties
-dependency-reduced-pom.xml
-buildNumber.properties
-.mvn/timing.properties
-# https://maven.apache.org/tools/wrapper/#Usage_with_or_without_Binary_JAR
-.mvn/wrapper/maven-wrapper.jar
+**/target/
+*.exec
 
-# Eclipse m2e generated files
-# Eclipse Core
+# Environment Credentials and Local Secret Overrides
+.env
+agy.env
+.env.local
+*.env
+agy*
+
+# Compiled class file
+*.class
+
+# Log files
+*.log
+*.log.*
+
+# IDE and Editor Files
+.idea/
+*.iml
 .project
-# JDT-specific (Eclipse Java Development Tools)
 .classpath
+.settings/
+.vscode/
+
+# Package Files
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# OS and Temp Files
+.DS_Store
+Thumbs.db
+tmp/
+scratch/
+hs_err_pid*
+replay_pid*
+
+
