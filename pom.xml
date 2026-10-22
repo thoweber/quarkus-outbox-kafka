@@ -137,6 +137,7 @@
                 <executions>
                     <execution>
                         <id>prepare-agent</id>
+                        <phase>test-compile</phase>
                         <goals>
                             <goal>prepare-agent</goal>
                         </goals>
