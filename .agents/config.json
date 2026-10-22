@@ -44,5 +44,10 @@
   "templates": {
     "adrTemplate": ".agents/templates/adr-template.md",
     "mermaidTemplates": ".agents/templates/mermaid-templates.md"
+  },
+  "sonarCloud": {
+    "organization": "thoweber",
+    "projectKey": "thoweber_quarkus-outbox-kafka",
+    "hostUrl": "https://sonarcloud.io"
   }
 }

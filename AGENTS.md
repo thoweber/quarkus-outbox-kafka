@@ -35,8 +35,10 @@ Uses virtual bucketing to allow safe active-active multi-pod Kafka dispatching w
 ## CI/CD Pipeline & Pull Request Workflows
 
 The repository uses GitHub Actions (`.github/workflows/ci.yaml`) with a two-stage pipeline:
-1. **JVM Build & Test (`build`)**:
-   - Executes formatting validation (`./mvnw process-sources && git diff --exit-code`) and JVM verification (`./mvnw clean verify`).
+1. **JVM Build, Test & SonarCloud Analysis (`build`)**:
+   - Executes formatting validation (`./mvnw process-sources && git diff --exit-code`).
+   - Executes JVM verification and JaCoCo coverage collection (`./mvnw clean verify`).
+   - Executes SonarCloud static analysis and Quality Gate check (`./mvnw sonar:sonar -Dsonar.qualitygate.wait=true`) when `SONAR_TOKEN` is configured.
    - Runs automatically on all pushes and pull requests targeting `main` and `master`.
 2. **Native Integration Tests (`native`)**:
    - Compiles and runs native image tests using Mandrel 21 (`./mvnw verify -pl integration-tests -Dnative`).

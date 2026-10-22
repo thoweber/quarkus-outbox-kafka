@@ -89,4 +89,29 @@ git diff --exit-code
 
 # Execute fast compiler check
 ./mvnw test-compile
+
+# Generate JaCoCo coverage reports locally
+./mvnw clean verify
 ```
+
+---
+
+## 4. SonarCloud Analysis & Quality Gate Compliance
+
+Static analysis and code coverage are automated via SonarCloud and JaCoCo:
+
+* **Configuration Coordinates (`.agents/config.json` & `pom.xml`):**
+  - Host: `https://sonarcloud.io`
+  - Organization: `thoweber`
+  - Project Key: `thoweber_quarkus-outbox-kafka`
+  - JaCoCo Report Paths: `${maven.multiModuleProjectDirectory}/integration-tests/target/site/jacoco-aggregate/jacoco.xml,${maven.multiModuleProjectDirectory}/**/target/site/jacoco/jacoco.xml`
+
+* **Manual / Local SonarCloud Scan:**
+  ```bash
+  export SONAR_TOKEN="<your-sonarcloud-token>"
+  ./mvnw -B clean verify sonar:sonar -Dsonar.qualitygate.wait=true
+  ```
+
+* **CI Pipeline Integration:**
+  Executed in `.github/workflows/ci.yaml` on pushes and pull requests targeting `main` and `master`. Gated on secret `SONAR_TOKEN`.
+
