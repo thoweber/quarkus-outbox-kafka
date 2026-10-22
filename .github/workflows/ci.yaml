@@ -2,17 +2,18 @@ name: Build & Test
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build & Test (Java 21)
+    name: Build & Test (JVM)
     runs-on: ubuntu-latest
 
     steps:
@@ -35,3 +36,26 @@ jobs:
       # Executes unit tests and Dev Services integration tests
       - name: Build and Run Tests
         run: ./mvnw -B clean verify
+
+  native:
+    name: Native Integration Tests
+    needs: build
+    runs-on: ubuntu-latest
+    # For pull requests, gate execution behind the manual review environment.
+    # For direct pushes and merges to main/master, run automatically.
+    environment: ${{ github.event_name == 'pull_request' && 'native-integration-tests' || '' }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Mandrel (GraalVM 21)
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'mandrel'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'maven'
+
+      - name: Run Native Integration Tests
+        run: ./mvnw -B verify -pl integration-tests -Dnative

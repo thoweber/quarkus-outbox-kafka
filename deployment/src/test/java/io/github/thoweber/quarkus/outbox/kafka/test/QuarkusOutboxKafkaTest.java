@@ -13,6 +13,7 @@ public class QuarkusOutboxKafkaTest {
     // Start unit test with your extension loaded
     @RegisterExtension
     static final QuarkusUnitTest unitTest = new QuarkusUnitTest()
+            .overrideConfigKey("quarkus.kafka.devservices.enabled", "false")
             .setArchiveProducer(() -> ShrinkWrap.create(JavaArchive.class));
 
     @Test

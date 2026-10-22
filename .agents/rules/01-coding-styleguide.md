@@ -2,13 +2,13 @@
 
 ## 1. Governance, Packaging & Quarkiverse Standards
 
-All contributions to `quarkus-tx-outbox` must adhere to Quarkus extension architecture and Quarkiverse Hub publishing conventions.
+All contributions to `quarkus-outbox-kafka` must adhere to Quarkus extension architecture and Quarkiverse Hub publishing conventions.
 
 ### 1.1 Module Separation & Dependency Invariants
 The codebase is partitioned into four distinct modules. Maintain strict separation of concerns across module boundaries:
 
 ```
-quarkus-outbox/
+quarkus-outbox-kafka/
 ├── runtime/              # Execution logic, CDI beans, JPA entities, Kafka dispatchers
 ├── deployment/           # Build steps (@BuildStep), bytecode generation, Jandex indexing
 ├── integration-tests/    # Dev Services tests (JVM & Native image)
@@ -43,12 +43,13 @@ quarkus-outbox/
         </executions>
     </plugin>
     ```
-  * Upon official transfer to Quarkiverse, group coordinates flip to `io.quarkiverse.outbox` and the enforcer override is removed.
-* **Artifact Naming Standard:** Follow the Quarkus artifact naming conventions:
-  * Aggregator: `quarkus-outbox-parent`
-  * Runtime: `quarkus-outbox`
-  * Deployment: `quarkus-outbox-deployment`
-  * Integration Tests: `quarkus-outbox-integration-tests`
+  * Upon official transfer to Quarkiverse, group coordinates flip to `io.quarkiverse.outboxkafka` and the enforcer override is removed.
+* **Artifact Naming Standard:** Follow the Quarkus extension artifact naming conventions:
+  * Aggregator: `quarkus-outbox-kafka-parent`
+  * Runtime: `quarkus-outbox-kafka`
+  * Deployment: `quarkus-outbox-kafka-deployment`
+  * Integration Tests: `quarkus-outbox-kafka-integration-tests`
+* **Java Root Package:** Standardize on `io.github.thoweber.quarkus.outbox.kafka.*` across all modules and test sources.
 
 ### 1.3 Formatting, Linting & License Headers
 * **Automated Formatting:** Source code formatting and import ordering are enforced by `impsort-maven-plugin` and `formatter-maven-plugin` as inherited from the Quarkiverse parent.
@@ -81,7 +82,8 @@ The hard compilation baseline is **Java 21 LTS** (`<maven.compiler.release>21</m
 * All batch snapshots, internal queue items, and event envelopes must be modeled as immutable `record` types:
   ```java
   public record OutboxBatchRecord(
-      long id,
+      UUID id,
+      int generation,
       String aggregateId,
       String aggregateType,
       int bucketId,
@@ -92,7 +94,7 @@ The hard compilation baseline is **Java 21 LTS** (`<maven.compiler.release>21</m
   ```
 * Deconstruct data using Record Patterns and Pattern Matching instead of deep getter chains:
   ```java
-  if (record instanceof OutboxBatchRecord(long id, var aggId, var type, int bId, var topic, var payload, var ts)) {
+  if (record instanceof OutboxBatchRecord(UUID id, int gen, var aggId, var type, int bId, var topic, var payload, var ts)) {
       // Direct variable binding
   }
   ```
@@ -100,12 +102,48 @@ The hard compilation baseline is **Java 21 LTS** (`<maven.compiler.release>21</m
 ### 2.3 Sequenced Collections
 * Access boundary records in batch fetches via Sequenced Collection methods (`getFirst()`, `getLast()`) rather than manual index calculations (`list.get(0)`, `list.get(list.size() - 1)`):
   ```java
-  long firstId = batch.getFirst().id();
-  long lastId = batch.getLast().id();
+  UUID firstId = batch.getFirst().id();
+  UUID lastId = batch.getLast().id();
   ```
 
 ### 2.4 Language Guardrails
 * Do not enable JVM preview features (`--enable-preview`) in production builds. The extension must run seamlessly on stock Java 21 LTS distributions (Temurin, Mandrel, GraalVM).
+
+### 2.5 Zero-Allocation & Memory Efficiency Patterns
+To hit the strict allocation budget ($\le \mathbf{512\text{ bytes}}$ per record, QG-5) and prevent GC pause spikes:
+1. **StatelessSession Direct Record Constructor Projection:**
+   * NEVER query `@Entity` instances in the dispatch loop. Query direct Record projections:
+     ```java
+     List<OutboxBatchRecord> batch = session.createQuery(
+         "SELECT new io.github.thoweber.quarkus.outbox.kafka.runtime.worker.OutboxBatchRecord(" +
+         "e.id, e.generation, e.aggregateId, e.aggregateType, e.bucketId, e.destinationTopic, e.payload, e.createdAt) " +
+         "FROM OutboxEvent e " +
+         "WHERE e.generation = :gen AND e.bucketId = :bucketId AND e.nextRetryAt <= :now " +
+         "ORDER BY e.id ASC", OutboxBatchRecord.class)
+         .setParameter("gen", activeGen)
+         .setParameter("bucketId", bucketId)
+         .setParameter("now", Instant.now())
+         .setMaxResults(batchSize)
+         .getResultList();
+     ```
+2. **Static Pre-Allocated CloudEvents Header Byte Constants:**
+   * Pre-allocate byte arrays for invariant header names to eliminate string-to-byte encoding allocations per record:
+     ```java
+     public final class CloudEventsHeaders {
+         public static final byte[] CE_SPECVERSION = "ce_specversion".getBytes(StandardCharsets.UTF_8);
+         public static final byte[] CE_ID = "ce_id".getBytes(StandardCharsets.UTF_8);
+         public static final byte[] CE_TYPE = "ce_type".getBytes(StandardCharsets.UTF_8);
+         public static final byte[] CE_SOURCE = "ce_source".getBytes(StandardCharsets.UTF_8);
+         public static final byte[] CE_TIME = "ce_time".getBytes(StandardCharsets.UTF_8);
+         public static final byte[] CONTENT_TYPE = "content-type".getBytes(StandardCharsets.UTF_8);
+         public static final byte[] V1_0 = "1.0".getBytes(StandardCharsets.UTF_8);
+         public static final byte[] APP_JSON = "application/json".getBytes(StandardCharsets.UTF_8);
+     }
+     ```
+3. **Payload Zero-Copy:**
+   * Avoid defensive copying or intermediate JSON transformations. Forward the persisted payload string or byte buffer directly to Kafka's `ProducerRecord`.
+4. **Virtual Thread Stack Footprint:**
+   * Supervisor loops must avoid deep call stacks or large method-local allocations, keeping virtual thread stacks $\le 1\text{ KB}$.
 
 ---
 
@@ -199,14 +237,21 @@ Every bucket drain operation must adhere strictly to three distinct phases:
       void unlock(int bucketId);
   }
   ```
-* Provide a default table-based JPA implementation (`TableBasedLockProvider`), while allowing applications to supply vendor implementations (such as PostgreSQL Advisory Locks or Redis/Redisson) via CDI alternatives or `@LookupIfProperty`.
+* Provide a default table-based JPA implementation (`JpaTableLockProvider`), while allowing applications to supply vendor implementations (such as PostgreSQL Advisory Locks or Redis/Redisson) via CDI alternatives or `@LookupIfProperty`.
 
-### 4.3 Fail-Fast Heartbeat Supervision
+### 4.3 Fail-Fast Heartbeat Supervision & Worker Deadline Buffer
 * Active bucket workers must renew leases asynchronously at regular intervals ($T_{\text{interval}} = \frac{T_{\text{lease}}}{3}$).
 * If a heartbeat fails to renew before reaching $\frac{2}{3} \times T_{\text{lease}}$, it must:
   1. Flag an internal volatile variable: `leaseLost = true`.
   2. Interrupt the active worker thread.
 * The dispatch loop must inspect `leaseLost` prior to dispatching each message, aborting execution immediately to prevent stale dual-dispatch (split-brain) conditions.
+* **Worker Cooperative Deadline Buffer:** Workers must verify that at least 2000ms remain on the lease before sending each record:
+  ```java
+  if (leaseTimeRemaining.compareTo(Duration.ofSeconds(2)) < 0) {
+      log.warnf("Lease safety deadline (< 2000ms) reached for bucket %d. Yielding batch to prevent split-brain race.", bucketId);
+      break;
+  }
+  ```
 
 ### 4.4 Non-Blocking & Reactive Thread Safety
 * **Event Loop Protection:** Never execute blocking database transactions or synchronous `.await()` calls on Vert.x Event Loop threads.
@@ -227,12 +272,13 @@ Every bucket drain operation must adhere strictly to three distinct phases:
 
 ### 5.2 CNCF CloudEvents Binary Mode Headers
 * Every record dispatched to Kafka must include CloudEvents v1.0 binary mode headers:
-  * `ce_id`: Unique identifier (String representation of the outbox event ID or UUID).
+  * `ce_id`: Unique identifier (String representation of the persistent UUIDv7 entity ID). Dynamic in-memory UUIDs are strictly prohibited.
   * `ce_type`: Aggregate domain event type.
   * `ce_source`: Originating service URI / identifier.
   * `ce_time`: ISO-8601 creation timestamp.
   * `content-type`: Payload mime type (e.g., `application/json`).
   * `x-outbox-bucket`: Virtual bucket ID (diagnostic metadata).
+  * `x-outbox-generation`: Topology generation epoch.
 * Downstream consumers rely on `ce_id` as an immutable deduplication key to absorb duplicate deliveries caused by network retries.
 
 ### 5.3 Partition Key Alignment
@@ -262,13 +308,14 @@ Every bucket drain operation must adhere strictly to three distinct phases:
      ```
   3. The remainder of the virtual bucket continues processing unimpeded.
 
-### 6.3 Operator Admin API (`/q/outbox-admin`)
-The extension must expose secured administrative endpoints for operational support:
-* `GET /q/outbox-admin/quarantined`: List all quarantined aggregate IDs.
-* `GET /q/outbox-admin/quarantined/{id}/events`: Inspect the dead-lettered event and pending tail.
-* `POST /q/outbox-admin/quarantined/{id}/replay`: Reset `next_retry_at = now()` to retry.
-* `POST /q/outbox-admin/quarantined/{id}/skip`: Mark dead event as `SKIPPED` and unfreeze pending events.
-* `POST /q/outbox-admin/quarantined/{id}/purge`: Delete all pending records for the aggregate.
+### 6.3 Operator Admin API (`/q/outbox-kafka/admin`)
+The extension must expose secured administrative endpoints under `/q/outbox-kafka/admin` for operational support:
+* `GET /q/outbox-kafka/admin/quarantined`: List all quarantined aggregate IDs.
+* `GET /q/outbox-kafka/admin/quarantined/{id}/events`: Inspect the dead-lettered event and pending tail.
+* `POST /q/outbox-kafka/admin/quarantined/{id}/replay`: Reset `next_retry_at = now()` to retry.
+* `POST /q/outbox-kafka/admin/quarantined/{id}/skip`: Mark dead event as `SKIPPED` in `outbox_dead_letter` and unfreeze pending events.
+* `DELETE /q/outbox-kafka/admin/quarantined/{id}`: Delete all pending and dead-letter records for the aggregate.
+* `POST /q/outbox-kafka/admin/drain`: Gracefully drain pending events across all buckets.
 
 ---
 
@@ -278,11 +325,12 @@ The extension must expose secured administrative endpoints for operational suppo
 * Never mock databases or Kafka brokers in integration tests.
 * Rely on Quarkus Dev Services (`quarkus-jdbc-postgresql`, `quarkus-kafka-client`) to spin up real PostgreSQL and Kafka Testcontainers automatically.
 
-### 7.2 Active-Active Concurrency Verification
-Integration tests must simulate multi-pod contention by executing multiple worker instances against the shared database:
-1. Verify that no two workers hold the same bucket lock simultaneously.
-2. Verify that per-aggregate FIFO order is strictly preserved under high concurrency.
-3. Verify that zombie workers are safely rejected upon lease expiration.
+### 7.2 Core Integration Test Suites
+Integration tests in `integration-tests/` must validate distributed systems invariants as detailed in [`integration-tests/TEST_GUIDE.md`](file:///home/developer/projects/quarkus-outbox-kafka/integration-tests/TEST_GUIDE.md) and [`.agents/rules/02-outbox-invariants.md`](file:///home/developer/projects/quarkus-outbox-kafka/.agents/rules/02-outbox-invariants.md):
+1. **`PhantomProducerIT`**: Stalled pod thread suspension, peer lease takeover, late flush with persistent UUIDv7 `ce_id`, consumer deduplication.
+2. **`ShortTransactionSandwichIT`**: Assert active DB connection count drops to zero during Kafka network dispatch.
+3. **`AggregateQuarantineIT`**: Poison pill isolation, trailing aggregate freeze, sibling aggregate drain, admin API replay/skip.
+4. **`OutboxConcurrencyIT`**: Multi-pod greedy bin-packing, dynamic lease rebalancing, strict monotonic per-aggregate FIFO ordering under concurrent write load.
 
 ### 7.3 GraalVM Native Compilation Validation
 Run native tests prior to preparing releases:

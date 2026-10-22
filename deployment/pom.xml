@@ -16,6 +16,10 @@
             <artifactId>quarkus-arc-deployment</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-kafka-client-deployment</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.github.thoweber</groupId>
             <artifactId>quarkus-outbox-kafka</artifactId>
             <version>${project.version}</version>
